@@ -1,0 +1,115 @@
+version: 1
+name: pi-mono-orchestrator
+lanes:
+  vllm:    {formats: [safetensors, nvfp4]}
+  llamacpp:{formats: [gguf]}
+  ollama:  {formats: [gguf], role: helper}
+
+models:
+  # ---- Always-On Control Plane ----
+  - id: llama-3.1-8b-it-nvfp4
+    lane: vllm
+    role: router
+  - id: phi-4-mini-it-q8
+    lane: llamacpp
+    role: summarizer
+
+  # ---- Executive Orchestrator (on demand) ----
+  - id: gpt-oss-120b
+    lane: vllm
+    role: executive
+
+  # ---- Planners / General Reasoners (vLLM lane) ----
+  - id: mistral-small-119b-a6b
+    lane: vllm
+    role: planner
+  - id: llama-3.3-70b-it
+    lane: vllm
+    role: planner
+
+  # ---- Coding / Agentic (llama.cpp GGUF lane) ----
+  - id: devstral-2-123b-q4_k_m
+    lane: llamacpp
+    role: repo_agent
+  - id: devstral-small-2-24b-it-ud_q4_k_xl
+    lane: llamacpp
+    role: repo_agent_fast
+  - id: phind-codellama-34b-v2-q8_0
+    lane: llamacpp
+    role: implementer
+  - id: nemotron-super-49b-q6_k
+    lane: llamacpp
+    role: implementer_alt
+  - id: llama-3.3-70b-it-uqq6_k_xl
+    lane: llamacpp
+    role: implementer_alt
+  - id: gemma-3-27b-it-bf16
+    lane: llamacpp
+    role: writer
+  - id: gemma-3-27b-it-q4
+    lane: llamacpp
+    role: economical_writer
+  - id: mixtral-8x22b-iq4_xs
+    lane: llamacpp
+    role: diversity_reasoner
+
+router:
+  control_plane:
+    primary: llama-3.1-8b-it-nvfp4
+    backup:  phi-4-mini-it-q8
+  adjudicator:
+    on_low_confidence: gpt-oss-120b
+    on_tool_failures:  gpt-oss-120b
+
+routing:
+  planning_research:
+    order: [gpt-oss-120b, mistral-small-119b-a6b, llama-3.3-70b-it]
+    params: {temperature: 0.3, top_p: 0.9}
+  repo_agentic_coding:
+    order: [devstral-2-123b-q4_k_m, devstral-small-2-24b-it-ud_q4_k_xl, phind-codellama-34b-v2-q8_0]
+    grammar_required: true
+    params: {temperature: 0.15, min_p: 0.01, top_p: 0.9, top_k: 50}
+  code_completion_tests:
+    order: [phind-codellama-34b-v2-q8_0, llama-3.3-70b-it-uqq6_k_xl, gemma-3-27b-it-bf16]
+    params: {temperature: 0.15, top_p: 0.9}
+  longform_docs:
+    order: [mistral-small-119b-a6b, gpt-oss-120b, llama-3.3-70b-it]
+    params: {temperature: 0.35, top_p: 0.9}
+  summarization_state:
+    order: [phi-4-mini-it-q8, phi-4-q8, llama-3.1-8b-it-nvfp4]
+    params: {temperature: 0.2, max_tokens: 800}
+  creative_ideation:
+    order: [gpt-oss-120b, mistral-small-119b-a6b, llama-3.3-70b-it]
+    params: {temperature: 0.7, top_p: 0.95}
+  quick_qna:
+    order: [llama-3.1-8b-it-nvfp4, phi-4-mini-it-q8, gemma-3-27b-it-q4]
+    params: {temperature: 0.2}
+  math_reasoning_short:
+    order: [gpt-oss-120b, mistral-small-119b-a6b, nemotron-super-49b-q6_k]
+    params: {temperature: 0.2, top_p: 0.9}
+
+kv_management:
+  trigger:
+    kv_utilization_pct: 70
+    steps_since_last_summary: 6
+  summarizer: phi-4-mini-it-q8
+  state_card_keys: [hypothesis, changed_files, failing_tests, last_cmds, open_questions]
+
+guards:
+  structured_outputs:
+    grammar_required_for: [repo_agentic_coding, code_completion_tests]
+    grammars: [json_object, json_array, unified_diff]
+  failure_policy:
+    tool_error:
+      retry: 1
+      escalate_next: true
+    low_confidence:
+      adjudicate_with: gpt-oss-120b
+    format_violation:
+      action: retry_reduce_temperature
+      max_retries: 2
+
+telemetry:
+  log_fields: [timestamp, task_type, model_id, lane, tokens_in, tokens_out, latency_ms, confidence, retries, result_ok]
+  ab_testing:
+    swap_on_wins: 3
