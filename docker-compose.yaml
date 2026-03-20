@@ -1,0 +1,62 @@
+version: "3.9"
+
+services:
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: vllm
+    env_file:
+      - ./vllm.env
+    command: >
+      --host 0.0.0.0 --port 8000
+      --model mistral-small-119b-a6b
+      --tensor-parallel-size 1
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    ports: ["8000:8000"]
+    volumes:
+      - /models:/models:ro
+
+  llamacpp:
+    image: ghcr.io/ggerganov/llama.cpp:full
+    container_name: llamacpp
+    env_file:
+      - ./llamacpp.env
+    command: >
+      --model /models/devstral-2-123b-q4_k_m.gguf
+      --port 8001
+      --host 0.0.0.0
+      --grammar /grammars/json.gbnf
+    runtime: nvidia
+    ports: ["8001:8001"]
+    volumes:
+      - /models:/models:ro
+      - /grammars:/grammars:ro
+
+  # Optional: Ollama helper lane
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    runtime: nvidia
+    ports: ["11434:11434"]
+    volumes:
+      - ollama:/root/.ollama
+
+  router:
+    build:
+      context: ..
+      dockerfile: ./docker/Router.Dockerfile
+    container_name: router
+    environment:
+      - PI_MONO_POLICY=/app/policy/orchestrator_policy.yaml
+      - PI_MONO_STATE=/app/state/session_state.json
+    volumes:
+      - ../policy:/app/policy
+      - ../state:/app/state
+    depends_on: [vllm, llamacpp]
+
+volumes:
+  ollama:
